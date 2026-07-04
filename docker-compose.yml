@@ -1,0 +1,9 @@
+# Есть небольшая проблема: докер контейнеры блокируют проведение UDP трафика на портах 50000+,
+# как это делает эмулятор в режиме UDP, надо будет попробовать что-нибудь с этим сделать
+
+services:
+  ffmpeg:
+    image: linuxserver/ffmpeg:8.1.2
+    entrypoint: ["ffmpeg"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

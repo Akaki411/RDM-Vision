@@ -1,0 +1,46 @@
+{
+  "cameras": [
+    {
+      "type": "rtsp",
+      "id": "cam-rtsp-01",
+      "url": "rtsp://localhost:8554/",
+      "fps": 10.0,
+      "transport": "tcp",
+      "reconnect_delay_ms": 2000,
+      "read_timeout_ms": 5000,
+      "enabled": true
+    },
+    {
+      "type": "grpc",
+      "id": "cam-grpc-01",
+      "endpoint": "http://192.168.1.20:50051",
+      "fps": 5.0,
+      "enabled": false
+    }
+  ],
+  "normalization": {
+    "target_size": 640,
+    "grayscale": true,
+    "contrast": 1
+  },
+  "detection": {
+    "model_path": "models/yolo26n-pose.onnx",
+    "input_size": 640,
+    "confidence_threshold": 0.5,
+    "nms_threshold": 0.45
+  },
+  "restore_service": {
+    "endpoint": "http://127.0.0.1:5000",
+    "timeout_ms": 2000
+  },
+  "api": {
+    "base_url": "http://127.0.0.1:3000",
+    "code_endpoint": "/api/codes",
+    "repeat_time_ms": 3000,
+    "timeout_ms": 5000
+  },
+  "pipeline": {
+    "channel_capacity": 8
+  },
+  "preview": false
+}

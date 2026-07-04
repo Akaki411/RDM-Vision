@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package irec;
+
+message RestoreRequest {
+  bytes data = 1;
+  string mime_type = 2;
+}
+
+message RestoreResponse {
+  bytes data = 1;
+  string mime_type = 2;
+  bool success = 3;
+}
+
+
+service IRECProcessor {
+  rpc RestoreDM(RestoreRequest) returns (RestoreResponse);
+}
