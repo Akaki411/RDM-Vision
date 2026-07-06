@@ -27,7 +27,8 @@ impl RestoreClient
         // ЗАГЛУШКА
         //Надо подключиться к self.endpoint (tonic), собрать RestoreRequest из
         // байтов изображения, вызвать RestoreDM и при success вернуть новый Frame
-        let _ = (image, &self.endpoint);
-        return None;
+        // Пока просто возвращаем то же изображение без изменений
+        let _ = &self.endpoint;
+        return Some(image.clone());
     }
 }

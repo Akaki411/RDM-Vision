@@ -65,55 +65,58 @@ impl Pipeline
     {
         let start = Instant::now();
 
+        // 1. Нормализация: ч/б + контраст
         let gray = self.prep.run(&frame);
-        let regions = self.detector.find(&gray);
 
-        tracing::debug!(camera = %frame.camera_id, regions = regions.len(), "frame processed");
+        // Предпросмотр - нормализованный поток уходит в окно каждым кадром
+        self.preview.show(&gray, &[]);
 
-        // Предпросмотр - отправка кадра с нарисованными областями в окно
-        self.preview.show(&frame, &regions);
-
-        // Обработка каждого из найденных регионов
-        for region in &regions
+        // 2. Быстрая авто-детекция RXing прямо по всему кадру
+        if let Some(text) = self.reader.read(&gray)
         {
-            let crop = self.cropper.crop(&gray, region);
+            self.publish(&frame, text, false, start).await;
+            return;
+        }
 
-            // Показываем в окне область в том виде, в котором она уходит в RXing
-            self.preview.show_crop(&crop);
+        // 3. Не прочиталось — зовём YOLO. Регионов нет — берём следующий кадр
+        let regions = self.detector.find(&gray);
+        tracing::debug!(camera = %frame.camera_id, regions = regions.len(), "frame processed");
+        let Some(region) = regions.first() else { return; };
 
-            if let Some((text, restored)) = self.read_code(crop).await
-            {
-                if self.middleware.allow(&text)
-                {
-                    let code = Code
-                    {
-                        camera_id: frame.camera_id.clone(),
-                        text,
-                        captured_at: frame.captured_at,
-                        restored
-                    };
-                    self.api.send(&code, start.elapsed()).await;
-                }
-            }
+        // 4. ROI обрезка. Показываем область в том виде, в котором она уходит в RXing
+        let crop = self.cropper.crop(&gray, region);
+        self.preview.show_crop(&crop);
+
+        // 5. Пробуем распознать обрезанную область
+        if let Some(text) = self.reader.read(&crop)
+        {
+            self.publish(&frame, text, false, start).await;
+            return;
+        }
+
+        // 6. Восстанавливаем область через gRPC-сервис и пробуем ещё раз
+        let Some(fixed) = self.restore.fix(&crop).await else { return; };
+        if let Some(text) = self.reader.read(&fixed)
+        {
+            self.publish(&frame, text, true, start).await;
         }
     }
 
-    // Попытка распознать код, при неудаче одно восстановление и повтор
-    async fn read_code(&mut self, crop: Frame) -> Option<(String, bool)>
+    // Отправить распознанный код дальше, если middleware его пропускает
+    async fn publish(&mut self, frame: &Frame, text: String, restored: bool, start: Instant)
     {
-        if let Some(text) = self.reader.read(&crop)
+        if !self.middleware.allow(&text)
         {
-            return Some((text, false));
+            return;
         }
 
-        // Если не прочиталось, то восстанавливаем и пробуем ещё раз
-        let fixed = self.restore.fix(&crop).await?;
-        if let Some(text) = self.reader.read(&fixed)
+        let code = Code
         {
-            return Some((text, true));
-        }
-
-        // После восстановления снова ничего - пропускаем кадр
-        return None;
+            camera_id: frame.camera_id.clone(),
+            text,
+            captured_at: frame.captured_at,
+            restored
+        };
+        self.api.send(&code, start.elapsed()).await;
     }
 }
