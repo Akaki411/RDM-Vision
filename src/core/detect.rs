@@ -10,7 +10,8 @@ pub struct Detector
 {
     session: Session,
     input: usize,
-    conf: f32
+    conf: f32,
+    nms: f32
 }
 
 impl Detector
@@ -27,7 +28,8 @@ impl Detector
         {
             session,
             input: cfg.input_size as usize,
-            conf: cfg.confidence_threshold
+            conf: cfg.confidence_threshold,
+            nms: cfg.nms_threshold
         });
     }
 
@@ -82,29 +84,51 @@ impl Detector
             .try_extract_tensor::<f32>()
             .map_err(|e| AppError::Detect(e.to_string()))?;
 
-        return Ok(parse(out, shape, self.conf, scale, pad_x, pad_y));
+        return Ok(parse(out, shape, self.conf, self.nms, scale, pad_x, pad_y));
     }
 }
 
+// Кандидат до подавления пересечений
+struct Cand
+{
+    score: f32,
+    corners: [Point; 4]
+}
+
 // Преобразование вывода модели в адекватный формат
-fn parse(out: &[f32], shape: &[i64], conf: f32, scale: f32, pad_x: f32, pad_y: f32) -> Vec<Region>
+fn parse(out: &[f32], shape: &[i64], conf: f32, nms_thr: f32, scale: f32, pad_x: f32, pad_y: f32) -> Vec<Region>
 {
     if shape.len() != 3
     {
         return Vec::new();
     }
-    let num = shape[1] as usize;
-    let attrs = shape[2] as usize;
-    if attrs < 18
+
+    // Поддержка разных форматов моделей
+    let (num, attrs, transposed) = if shape[1] >= shape[2]
+    {
+        (shape[1] as usize, shape[2] as usize, false)
+    }
+    else
+    {
+        (shape[2] as usize, shape[1] as usize, true)
+    };
+
+    if attrs < 17
     {
         return Vec::new();
     }
 
-    let mut regions = Vec::new();
+    let kpt = attrs - 12;
+
+    let val = |i: usize, a: usize| -> f32
+    {
+        if transposed { out[a * num + i] } else { out[i * attrs + a] }
+    };
+
+    let mut cand = Vec::new();
     for i in 0..num
     {
-        let base = i * attrs;
-        let score = out[base + 4];
+        let score = val(i, 4);
         if score < conf
         {
             continue;
@@ -113,18 +137,72 @@ fn parse(out: &[f32], shape: &[i64], conf: f32, scale: f32, pad_x: f32, pad_y: f
         let mut corners = [Point { x: 0.0, y: 0.0 }; 4];
         for j in 0..4
         {
-            let kx = out[base + 6 + j * 3];
-            let ky = out[base + 7 + j * 3];
             corners[j] = Point
             {
-                x: (kx - pad_x) / scale,
-                y: (ky - pad_y) / scale
+                x: (val(i, kpt + j * 3) - pad_x) / scale,
+                y: (val(i, kpt + j * 3 + 1) - pad_y) / scale
             };
         }
 
-        regions.push(Region { score, corners });
+        cand.push(Cand { score, corners });
     }
-    return regions;
+
+    return nms(cand, nms_thr);
+}
+
+// Подавление пересечений, сайтовый экспорт даёт дубли, свой уже почищен
+fn nms(mut cand: Vec<Cand>, thr: f32) -> Vec<Region>
+{
+    cand.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+    let mut keep: Vec<Region> = Vec::new();
+    'next: for c in cand
+    {
+        for r in &keep
+        {
+            if iou(&c.corners, &r.corners) > thr
+            {
+                continue 'next;
+            }
+        }
+        keep.push(Region { score: c.score, corners: c.corners });
+    }
+    return keep;
+}
+
+// Расчет пересечений по рамке, описанной вокруг углов
+fn iou(a: &[Point; 4], b: &[Point; 4]) -> f32
+{
+    let (ax0, ay0, ax1, ay1) = bounds(a);
+    let (bx0, by0, bx1, by1) = bounds(b);
+
+    let iw = (ax1.min(bx1) - ax0.max(bx0)).max(0.0);
+    let ih = (ay1.min(by1) - ay0.max(by0)).max(0.0);
+    let inter = iw * ih;
+
+    let union = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter;
+    if union <= 0.0
+    {
+        return 0.0;
+    }
+    return inter / union;
+}
+
+// Рамка вокруг 4 углов
+fn bounds(c: &[Point; 4]) -> (f32, f32, f32, f32)
+{
+    let mut x0 = c[0].x;
+    let mut y0 = c[0].y;
+    let mut x1 = c[0].x;
+    let mut y1 = c[0].y;
+    for p in &c[1..]
+    {
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    return (x0, y0, x1, y1);
 }
 
 // Ресайз в квадрат size×size с сохранением пропорций и серым фоном

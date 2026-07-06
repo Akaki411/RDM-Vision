@@ -21,13 +21,13 @@
   "normalization": {
     "target_size": 640,
     "grayscale": true,
-    "contrast": 1
+    "contrast": 1.4
   },
   "detection": {
-    "model_path": "models/yolo26n-pose.onnx",
+    "model_path": "models/yolo26n-pose-site.onnx",
     "input_size": 640,
-    "confidence_threshold": 0.5,
-    "nms_threshold": 0.45
+    "confidence_threshold": 0.9,
+    "nms_threshold": 0.2
   },
   "restore_service": {
     "endpoint": "http://127.0.0.1:5000",
@@ -36,11 +36,11 @@
   "api": {
     "base_url": "http://127.0.0.1:3000",
     "code_endpoint": "/api/codes",
-    "repeat_time_ms": 3000,
+    "repeat_time_ms": 300,
     "timeout_ms": 5000
   },
   "pipeline": {
     "channel_capacity": 8
   },
-  "preview": false
+  "preview": true
 }

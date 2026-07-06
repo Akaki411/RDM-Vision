@@ -3,6 +3,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+// Конфиг по умолчанию
+mod defaults
+{
+    pub const RTSP_ID: &str = "cam-rtsp-01";
+    pub const RTSP_URL: &str = "rtsp://localhost:8554/";
+    pub const RTSP_FPS: f64 = 10.0;
+    pub const RTSP_TRANSPORT: &str = "auto";
+    pub const RTSP_RECONNECT_MS: u64 = 2000;
+    pub const RTSP_READ_TIMEOUT_MS: u64 = 5000;
+
+    pub const GRPC_ID: &str = "cam-grpc-01";
+    pub const GRPC_ENDPOINT: &str = "http://192.168.1.20:50051";
+    pub const GRPC_FPS: f64 = 5.0;
+
+    pub const NORM_TARGET_SIZE: u32 = 640;
+    pub const NORM_CONTRAST: f32 = 1.4;
+
+    pub const DETECT_MODEL_PATH: &str = "models/yolo26n-pose.onnx";
+    pub const DETECT_INPUT_SIZE: u32 = 640;
+    pub const DETECT_CONFIDENCE: f32 = 0.5;
+    pub const DETECT_NMS: f32 = 0.45;
+
+    pub const RESTORE_ENDPOINT: &str = "http://127.0.0.1:5000";
+    pub const RESTORE_TIMEOUT_MS: u64 = 2000;
+
+    pub const API_BASE_URL: &str = "http://127.0.0.1:3000";
+    pub const API_CODE_ENDPOINT: &str = "/api/codes";
+    pub const API_REPEAT_MS: u64 = 3000;
+    pub const API_TIMEOUT_MS: u64 = 5000;
+
+    pub const PIPELINE_CHANNEL_CAPACITY: usize = 8;
+
+    pub const PREVIEW: bool = false;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings
 {
@@ -13,10 +48,14 @@ pub struct Settings
     pub api: ApiConfig,
     #[serde(default)]
     pub pipeline: PipelineConfig,
-    #[serde(default)]
+    #[serde(default = "default_preview")]
     pub preview: bool
 }
 
+fn default_preview() -> bool
+{
+    return defaults::PREVIEW;
+}
 
 impl Settings
 {
@@ -71,7 +110,7 @@ impl Default for Settings
             restore_service: RestoreConfig::default(),
             api: ApiConfig::default(),
             pipeline: PipelineConfig::default(),
-            preview: true
+            preview: defaults::PREVIEW
         }
     }
 }
@@ -120,7 +159,7 @@ pub struct RtspConfig
 
 fn default_transport() -> String
 {
-    return "auto".into();
+    return defaults::RTSP_TRANSPORT.into();
 }
 
 impl Default for RtspConfig
@@ -129,12 +168,12 @@ impl Default for RtspConfig
     {
         Self
         {
-            id: "cam-rtsp-01".into(),
-            url: "rtsp://localhost:8554/stream".into(),
-            fps: 10.0,
+            id: defaults::RTSP_ID.into(),
+            url: defaults::RTSP_URL.into(),
+            fps: defaults::RTSP_FPS,
             transport: default_transport(),
-            reconnect_delay_ms: 2000,
-            read_timeout_ms: 5000,
+            reconnect_delay_ms: defaults::RTSP_RECONNECT_MS,
+            read_timeout_ms: defaults::RTSP_READ_TIMEOUT_MS,
             enabled: true
         }
     }
@@ -155,9 +194,9 @@ impl Default for GrpcConfig
     {
         Self
         {
-            id: "cam-grpc-01".into(),
-            endpoint: "http://192.168.1.20:50051".into(),
-            fps: 5.0,
+            id: defaults::GRPC_ID.into(),
+            endpoint: defaults::GRPC_ENDPOINT.into(),
+            fps: defaults::GRPC_FPS,
             enabled: true
         }
     }
@@ -175,7 +214,7 @@ impl Default for NormConfig
 {
     fn default() -> Self
     {
-        Self { target_size: 640, grayscale: true, contrast: 1.2 }
+        Self { target_size: defaults::NORM_TARGET_SIZE, grayscale: true, contrast: defaults::NORM_CONTRAST }
     }
 }
 
@@ -191,7 +230,7 @@ pub struct DetectConfig
 
 fn default_input_size() -> u32
 {
-    return 640;
+    return defaults::DETECT_INPUT_SIZE;
 }
 
 impl Default for DetectConfig
@@ -200,10 +239,10 @@ impl Default for DetectConfig
     {
         Self
         {
-            model_path: "models/yolo26n-pose.onnx".into(),
+            model_path: defaults::DETECT_MODEL_PATH.into(),
             input_size: default_input_size(),
-            confidence_threshold: 0.5,
-            nms_threshold: 0.45
+            confidence_threshold: defaults::DETECT_CONFIDENCE,
+            nms_threshold: defaults::DETECT_NMS
         }
     }
 }
@@ -219,7 +258,7 @@ impl Default for RestoreConfig
 {
     fn default() -> Self
     {
-        Self { endpoint: "http://127.0.0.1:5000".into(), timeout_ms: 2000 }
+        Self { endpoint: defaults::RESTORE_ENDPOINT.into(), timeout_ms: defaults::RESTORE_TIMEOUT_MS }
     }
 }
 
@@ -238,10 +277,10 @@ impl Default for ApiConfig
     {
         Self
         {
-            base_url: "http://127.0.0.1:3000".into(),
-            code_endpoint: "/api/codes".into(),
-            repeat_time_ms: 3000,
-            timeout_ms: 5000
+            base_url: defaults::API_BASE_URL.into(),
+            code_endpoint: defaults::API_CODE_ENDPOINT.into(),
+            repeat_time_ms: defaults::API_REPEAT_MS,
+            timeout_ms: defaults::API_TIMEOUT_MS
         }
     }
 }
@@ -256,6 +295,6 @@ impl Default for PipelineConfig
 {
     fn default() -> Self
     {
-        Self { channel_capacity: 8 }
+        Self { channel_capacity: defaults::PIPELINE_CHANNEL_CAPACITY }
     }
 }
