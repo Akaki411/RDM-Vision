@@ -3,7 +3,6 @@ services:
     image: linuxserver/ffmpeg:8.1.2
     entrypoint: ["ffmpeg"]
     network_mode: "host"
-    restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -19,7 +18,6 @@ services:
     depends_on:
       - ffmpeg
     network_mode: "host"
-    restart: unless-stopped
     volumes:
       - ./config.json:/app/config.json:ro
       - ./models:/app/models:ro
