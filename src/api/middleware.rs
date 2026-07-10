@@ -6,7 +6,8 @@ use crate::config::ApiConfig;
 pub struct Middleware
 {
     seen: HashMap<String, Instant>,
-    repeat: Duration
+    repeat: Duration,
+    cleaned: Instant
 }
 
 impl Middleware
@@ -16,16 +17,19 @@ impl Middleware
         return Self
         {
             seen: HashMap::new(),
-            repeat: Duration::from_millis(cfg.repeat_time_ms)
+            repeat: Duration::from_millis(cfg.repeat_time_ms),
+            cleaned: Instant::now()
         };
     }
-
-    // true — код можно отправлять, false — недавно уже отправляли.
     pub fn allow(&mut self, code: &str) -> bool
     {
         let now = Instant::now();
 
-        self.seen.retain(|_, time| now.duration_since(*time) < self.repeat);
+        if now.duration_since(self.cleaned) >= self.repeat
+        {
+            self.seen.retain(|_, time| now.duration_since(*time) < self.repeat);
+            self.cleaned = now;
+        }
 
         if let Some(time) = self.seen.get(code)
         {

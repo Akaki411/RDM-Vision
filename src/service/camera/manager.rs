@@ -1,12 +1,17 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc;
 
-use crate::config::{CameraConfig, Settings};
+use crate::config::{CameraConfig, PipelineConfig, Settings};
 use crate::error::{AppError, Result};
 
-use super::base::{Camera, FrameReceiver, Stop};
-use super::grpc::GrpcCamera;
+use super::base::{CamPace, Camera, FrameReceiver, Stop};
+use super::gige::GigeCamera;
+
+// Темпы камер по id — пайплайн через них переключает горячий/холодный ход
+pub type CamPaces = HashMap<String, Arc<CamPace>>;
 
 // Установление соединений к камерам по конфигу
 fn build(cfg: &CameraConfig) -> Result<Box<dyn Camera>>
@@ -14,7 +19,7 @@ fn build(cfg: &CameraConfig) -> Result<Box<dyn Camera>>
     match cfg
     {
         CameraConfig::Rtsp(c) => Ok(Box::new(super::rtsp::RtspCamera::new(c.clone()))),
-        CameraConfig::Grpc(c) => Ok(Box::new(GrpcCamera::new(c.clone())))
+        CameraConfig::Gige(c) => Ok(Box::new(GigeCamera::new(c.clone())))
     }
 }
 
@@ -46,23 +51,27 @@ impl Cameras
         return Ok(Self { list });
     }
 
-    // Запустить по потоку на камеру
-    pub fn spawn(self, capacity: usize) -> (FrameReceiver, CamerasHandle)
+    // Запустить по потоку на камеру. Возвращает канал кадров, ручку остановки и
+    // темпы камер (по ним пайплайн гоняет холодный/горячий режим)
+    pub fn spawn(self, capacity: usize, pipeline: &PipelineConfig) -> (FrameReceiver, CamerasHandle, CamPaces)
     {
         let (sender, receiver) = mpsc::channel(capacity);
         let stop = Stop::new();
         let mut handles = Vec::with_capacity(self.list.len());
+        let mut paces = CamPaces::new();
 
         for mut camera in self.list
         {
             let sender = sender.clone();
             let stop = stop.clone();
             let id = camera.id().to_string();
+            let pace = CamPace::new(pipeline.cold_fps, pipeline.hot_fps, pipeline.hot_hold_ms);
+            paces.insert(id.clone(), pace.clone());
             let handle = std::thread::Builder::new()
                 .name(format!("camera-{id}"))
                 .spawn(move ||
                 {
-                    if let Err(err) = camera.run(sender, stop)
+                    if let Err(err) = camera.run(sender, stop, pace)
                     {
                         tracing::error!(camera = %id, error = %err, "camera thread exited with error");
                     }
@@ -72,7 +81,7 @@ impl Cameras
         }
         drop(sender);
 
-        return (receiver, CamerasHandle { stop, handles });
+        return (receiver, CamerasHandle { stop, handles }, paces);
     }
 }
 

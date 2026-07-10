@@ -1,8 +1,8 @@
 mod base;
 mod docker;
-mod grpc;
+mod gige;
 mod manager;
 mod rtsp;
 
-pub use base::{Camera, FrameReceiver, FrameSender, Stop};
-pub use manager::{Cameras, CamerasHandle};
+pub use base::{CamPace, Camera, FrameReceiver, FrameSender, Stop};
+pub use manager::{CamPaces, Cameras, CamerasHandle};

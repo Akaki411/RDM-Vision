@@ -28,15 +28,15 @@ async fn main() -> anyhow::Result<()>
 
     tracing::info!(path = %config_path, cameras = settings.cameras.len(), "config loaded");
 
-    // Запуск камер: каждая в своём потоке, кадры идут в общий канал
+    // Запуск камер
     let cameras = Cameras::from_settings(&settings)?;
-    let (frames, handle) = cameras.spawn(settings.pipeline.channel_capacity);
+    let (frames, handle, paces) = cameras.spawn(settings.pipeline.channel_capacity, &settings.pipeline);
 
     // Пайплайн работает до Ctrl-C или закрытия канала
     let pipeline = Pipeline::new(&settings)?;
     tokio::select!
     {
-        result = pipeline.run(frames) =>
+        result = pipeline.run(frames, paces) =>
         {
             if let Err(err) = result
             {

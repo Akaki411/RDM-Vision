@@ -1,3 +1,4 @@
+use ort::ep::ExecutionProviderDispatch;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
@@ -19,9 +20,16 @@ impl Detector
     // Загрузка модели из cfg.model_path
     pub fn new(cfg: DetectConfig) -> Result<Self>
     {
-        let session = Session::builder()
-            .and_then(|b| Ok(b.with_optimization_level(GraphOptimizationLevel::Level3)?))
-            .and_then(|mut b| b.commit_from_file(&cfg.model_path))
+        // Пробуем аппаратные провайдеры по приоритету
+        let mut builder = Session::builder().map_err(|e| AppError::Detect(e.to_string()))?;
+        builder = builder
+            .with_execution_providers(providers())
+            .map_err(|e| AppError::Detect(e.to_string()))?;
+        builder = builder
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| AppError::Detect(e.to_string()))?;
+        let session = builder
+            .commit_from_file(&cfg.model_path)
             .map_err(|e| AppError::Detect(e.to_string()))?;
 
         return Ok(Self
@@ -86,6 +94,45 @@ impl Detector
 
         return Ok(parse(out, shape, self.conf, self.nms, scale, pad_x, pad_y));
     }
+}
+
+fn providers() -> Vec<ExecutionProviderDispatch>
+{
+    use ort::ep::*;
+
+    let mut list: Vec<ExecutionProviderDispatch> = Vec::new();
+
+    #[cfg(windows)]
+    list.push(DirectMLExecutionProvider::default().build());
+
+    #[cfg(target_os = "linux")]
+    {
+        list.push(CUDAExecutionProvider::default().build());
+        list.push(ROCmExecutionProvider::default().build());
+        list.push(OpenVINOExecutionProvider::default().build());
+    }
+
+    list.push(CPUExecutionProvider::default().build());
+    return list;
+}
+
+// Названия провайдеров под платформу
+pub fn accel_providers() -> Vec<&'static str>
+{
+    let mut list = Vec::new();
+
+    #[cfg(windows)]
+    list.push("directml");
+
+    #[cfg(target_os = "linux")]
+    {
+        list.push("cuda");
+        list.push("rocm");
+        list.push("openvino");
+    }
+
+    list.push("cpu");
+    return list;
 }
 
 // Кандидат до подавления пересечений

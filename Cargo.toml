@@ -24,9 +24,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
 prost = "0.13"
 tonic = "0.12"
-ort = "2.0.0-rc.12"
 rxing = "0.9.1"
 minifb = "0.27"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+viva-genicam = "0.2.3"
+
+[target.'cfg(windows)'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["directml"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["cuda", "rocm", "openvino"] }
+
+[target.'cfg(not(any(windows, target_os = "linux")))'.dependencies]
+ort = { version = "2.0.0-rc.12" }
 
 
 [build-dependencies]

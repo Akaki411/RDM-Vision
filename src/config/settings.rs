@@ -13,19 +13,20 @@ mod defaults
     pub const RTSP_RECONNECT_MS: u64 = 2000;
     pub const RTSP_READ_TIMEOUT_MS: u64 = 5000;
 
-    pub const GRPC_ID: &str = "cam-grpc-01";
-    pub const GRPC_ENDPOINT: &str = "http://192.168.1.20:50051";
-    pub const GRPC_FPS: f64 = 5.0;
+    pub const GIGE_ID: &str = "cam-gige-01";
+    pub const GIGE_ADDRESS: &str = "127.0.0.1";
+    pub const GIGE_INTERFACE: &str = "127.0.0.1";
 
     pub const NORM_TARGET_SIZE: u32 = 640;
     pub const NORM_CONTRAST: f32 = 1.4;
 
     pub const DETECT_MODEL_PATH: &str = "models/yolo26n-pose.onnx";
     pub const DETECT_INPUT_SIZE: u32 = 640;
-    pub const DETECT_CONFIDENCE: f32 = 0.5;
+    pub const DETECT_CONFIDENCE: f32 = 0.4;
     pub const DETECT_NMS: f32 = 0.45;
+    pub const DETECT_BLUR_THRESHOLD: f32 = 15.0;
 
-    pub const RESTORE_ENDPOINT: &str = "http://127.0.0.1:5000";
+    pub const RESTORE_ENDPOINT: &str = "http://127.0.0.1:50051";
     pub const RESTORE_TIMEOUT_MS: u64 = 2000;
 
     pub const API_BASE_URL: &str = "http://127.0.0.1:3000";
@@ -34,6 +35,10 @@ mod defaults
     pub const API_TIMEOUT_MS: u64 = 5000;
 
     pub const PIPELINE_CHANNEL_CAPACITY: usize = 8;
+    pub const PIPELINE_WORKERS: usize = 0;
+    pub const PIPELINE_COLD_FPS: f64 = 3.0;
+    pub const PIPELINE_HOT_FPS: f64 = 15.0;
+    pub const PIPELINE_HOT_HOLD_MS: u64 = 1500;
 
     pub const PREVIEW: bool = false;
 }
@@ -103,7 +108,7 @@ impl Default for Settings
             cameras: vec!
             [
                 CameraConfig::Rtsp(RtspConfig::default()),
-                CameraConfig::Grpc(GrpcConfig::default())
+                CameraConfig::Gige(GigeConfig::default())
             ],
             normalization: NormConfig::default(),
             detection: DetectConfig::default(),
@@ -120,7 +125,7 @@ impl Default for Settings
 pub enum CameraConfig
 {
     Rtsp(RtspConfig),
-    Grpc(GrpcConfig)
+    Gige(GigeConfig)
 }
 
 impl CameraConfig
@@ -130,7 +135,7 @@ impl CameraConfig
         match self
         {
             CameraConfig::Rtsp(c) => &c.id,
-            CameraConfig::Grpc(c) => &c.id
+            CameraConfig::Gige(c) => &c.id
         }
     }
 
@@ -139,7 +144,7 @@ impl CameraConfig
         match self
         {
             CameraConfig::Rtsp(c) => c.enabled,
-            CameraConfig::Grpc(c) => c.enabled
+            CameraConfig::Gige(c) => c.enabled
         }
     }
 }
@@ -179,25 +184,29 @@ impl Default for RtspConfig
     }
 }
 
+// GigE Vision / GenICam камера. address/interface пустые — включаем авто-режим
+// (discovery в сети / выбор интерфейса). Темп кадров задаёт pipeline (cold/hot)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GrpcConfig
+pub struct GigeConfig
 {
     pub id: String,
-    pub endpoint: String,
-    pub fps: f64,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub interface: String,
     pub enabled: bool
 }
 
-impl Default for GrpcConfig
+impl Default for GigeConfig
 {
     fn default() -> Self
     {
         Self
         {
-            id: defaults::GRPC_ID.into(),
-            endpoint: defaults::GRPC_ENDPOINT.into(),
-            fps: defaults::GRPC_FPS,
-            enabled: true
+            id: defaults::GIGE_ID.into(),
+            address: defaults::GIGE_ADDRESS.into(),
+            interface: defaults::GIGE_INTERFACE.into(),
+            enabled: false
         }
     }
 }
@@ -225,12 +234,19 @@ pub struct DetectConfig
     #[serde(default = "default_input_size")]
     pub input_size: u32,
     pub confidence_threshold: f32,
-    pub nms_threshold: f32
+    pub nms_threshold: f32,
+    #[serde(default = "default_blur_threshold")]
+    pub blur_threshold: f32
 }
 
 fn default_input_size() -> u32
 {
     return defaults::DETECT_INPUT_SIZE;
+}
+
+fn default_blur_threshold() -> f32
+{
+    return defaults::DETECT_BLUR_THRESHOLD;
 }
 
 impl Default for DetectConfig
@@ -242,7 +258,8 @@ impl Default for DetectConfig
             model_path: defaults::DETECT_MODEL_PATH.into(),
             input_size: default_input_size(),
             confidence_threshold: defaults::DETECT_CONFIDENCE,
-            nms_threshold: defaults::DETECT_NMS
+            nms_threshold: defaults::DETECT_NMS,
+            blur_threshold: default_blur_threshold()
         }
     }
 }
@@ -288,13 +305,65 @@ impl Default for ApiConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig
 {
-    pub channel_capacity: usize
+    pub channel_capacity: usize,
+    // Число параллельных воркеров обработки. 0 — по числу ядер
+    #[serde(default = "default_workers")]
+    pub workers: usize,
+    // M — предел кадров, пока код не виден
+    #[serde(default = "default_cold_fps")]
+    pub cold_fps: f64,
+    // N — предел кадров, когда код в кадре (разгон)
+    #[serde(default = "default_hot_fps")]
+    pub hot_fps: f64,
+    // Удержание горячего режима после последнего обнаружения
+    #[serde(default = "default_hot_hold_ms")]
+    pub hot_hold_ms: u64
+}
+
+fn default_workers() -> usize
+{
+    return defaults::PIPELINE_WORKERS;
+}
+
+fn default_cold_fps() -> f64
+{
+    return defaults::PIPELINE_COLD_FPS;
+}
+
+fn default_hot_fps() -> f64
+{
+    return defaults::PIPELINE_HOT_FPS;
+}
+
+fn default_hot_hold_ms() -> u64
+{
+    return defaults::PIPELINE_HOT_HOLD_MS;
+}
+
+impl PipelineConfig
+{
+    // Развёрнутое число воркеров: 0 в конфиге → по числу доступных ядер
+    pub fn worker_count(&self) -> usize
+    {
+        if self.workers > 0
+        {
+            return self.workers;
+        }
+        return std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    }
 }
 
 impl Default for PipelineConfig
 {
     fn default() -> Self
     {
-        Self { channel_capacity: defaults::PIPELINE_CHANNEL_CAPACITY }
+        Self
+        {
+            channel_capacity: defaults::PIPELINE_CHANNEL_CAPACITY,
+            workers: default_workers(),
+            cold_fps: default_cold_fps(),
+            hot_fps: default_hot_fps(),
+            hot_hold_ms: default_hot_hold_ms()
+        }
     }
 }

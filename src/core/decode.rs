@@ -10,11 +10,12 @@ impl Reader
         return Self;
     }
 
-    // Прочитать код из выпрямленной области. None — прочитать не удалось
-    pub fn read(&self, frame: &Frame) -> Option<String>
+    pub fn read(&self, frame: &Frame, hard: bool) -> Option<String>
     {
         let luma = to_luma(frame);
-        let mut hints = DecodeHints::default().with(DecodeHintValue::TryHarder(true));
+        let mut hints = DecodeHints::default()
+            .with(DecodeHintValue::TryHarder(hard))
+            .with(DecodeHintValue::AlsoInverted(hard));
         let result = rxing::helpers::detect_in_luma_with_hints(
             luma,
             frame.width,

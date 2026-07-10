@@ -9,13 +9,11 @@ impl Cropper
         return Self;
     }
 
+    // Развертка области без полей
     pub fn crop(&self, frame: &Frame, region: &Region) -> Frame
     {
-        // Углы модели могут идти в произвольном порядке — упорядочиваем их
-        // геометрически (ВЛ, ВП, НП, НЛ), иначе код может отзеркалиться
         let c = order_corners(region.corners);
 
-        // Сторона квадрата — по самой длинной стороне четырёхугольника
         let side = [
             dist(c[0], c[1]),
             dist(c[1], c[2]),
@@ -25,15 +23,10 @@ impl Cropper
         .into_iter()
         .fold(0.0f32, f32::max)
         .round() as i32;
-        let side = side.clamp(32, 512) as usize;
+        let side = side.clamp(32, 1024) as usize;
 
-        let margin = (side / 8).max(4);
-        let out_size = side + 2 * margin;
+        let mut data = vec![255u8; side * side];
 
-        // Белый фон вокруг кода
-        let mut data = vec![255u8; out_size * out_size];
-
-        // Дальше уже нейронка что-то нашаманила, тут какой-то матан начинается, а я его не знаю
         for oy in 0..side
         {
             let v = (oy as f32 + 0.5) / side as f32;
@@ -50,7 +43,7 @@ impl Cropper
                     + u * v * c[2].y
                     + (1.0 - u) * v * c[3].y;
 
-                data[(oy + margin) * out_size + ox + margin] = sample(frame, sx, sy);
+                data[oy * side + ox] = sample(frame, sx, sy);
             }
         }
 
@@ -58,8 +51,36 @@ impl Cropper
         {
             camera_id: frame.camera_id.clone(),
             captured_at: frame.captured_at,
-            width: out_size as u32,
-            height: out_size as u32,
+            width: side as u32,
+            height: side as u32,
+            format: PixelFormat::Gray8,
+            data
+        };
+    }
+
+    // Та же область, но с белой тихой зоной вокруг, её ждёт RXing
+    pub fn quiet_zone(&self, crop: &Frame) -> Frame
+    {
+        let w = crop.width as usize;
+        let h = crop.height as usize;
+        let margin = (w.max(h) / 8).max(4);
+        let ow = w + 2 * margin;
+        let oh = h + 2 * margin;
+
+        let mut data = vec![255u8; ow * oh];
+        for y in 0..h
+        {
+            let src = y * w;
+            let dst = (y + margin) * ow + margin;
+            data[dst..dst + w].copy_from_slice(&crop.data[src..src + w]);
+        }
+
+        return Frame
+        {
+            camera_id: crop.camera_id.clone(),
+            captured_at: crop.captured_at,
+            width: ow as u32,
+            height: oh as u32,
             format: PixelFormat::Gray8,
             data
         };
@@ -69,27 +90,30 @@ impl Cropper
 // Упорядочить 4 угла как [ВЛ, ВП, НП, НЛ] по их положению
 fn order_corners(c: [Point; 4]) -> [Point; 4]
 {
-    let tl = pick(&c, |p| p.x + p.y, false);
-    let br = pick(&c, |p| p.x + p.y, true);
-    let tr = pick(&c, |p| p.y - p.x, false);
-    let bl = pick(&c, |p| p.y - p.x, true);
-    return [tl, tr, br, bl];
-}
+    let cx = (c[0].x + c[1].x + c[2].x + c[3].x) / 4.0;
+    let cy = (c[0].y + c[1].y + c[2].y + c[3].y) / 4.0;
 
-fn pick<F: Fn(Point) -> f32>(c: &[Point; 4], key: F, want_max: bool) -> Point
-{
-    let mut best = c[0];
-    let mut best_val = key(c[0]);
-    for &p in &c[1..]
+    let mut ordered = c;
+    ordered.sort_by(|a, b|
     {
-        let v = key(p);
-        if (want_max && v > best_val) || (!want_max && v < best_val)
+        let aa = (a.y - cy).atan2(a.x - cx);
+        let ab = (b.y - cy).atan2(b.x - cx);
+        aa.total_cmp(&ab)
+    });
+
+    // Начинаем обход с угла, ближайшего к верхнему-левому
+    let mut start = 0;
+    let mut best = ordered[0].x + ordered[0].y;
+    for (i, p) in ordered.iter().enumerate().skip(1)
+    {
+        if p.x + p.y < best
         {
-            best_val = v;
-            best = p;
+            best = p.x + p.y;
+            start = i;
         }
     }
-    return best;
+    ordered.rotate_left(start);
+    return ordered;
 }
 
 fn dist(a: Point, b: Point) -> f32
@@ -99,17 +123,26 @@ fn dist(a: Point, b: Point) -> f32
     return (dx * dx + dy * dy).sqrt();
 }
 
+// Билинейная выборка
 fn sample(frame: &Frame, x: f32, y: f32) -> u8
 {
-    let w = frame.width as i32;
-    let h = frame.height as i32;
-    let xi = x.round() as i32;
-    let yi = y.round() as i32;
-    if xi < 0 || yi < 0 || xi >= w || yi >= h
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+    if x < 0.0 || y < 0.0 || x > (w - 1) as f32 || y > (h - 1) as f32
     {
         return 255;
     }
-    return gray_at(frame, xi as usize, yi as usize);
+
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let fx = x - x0 as f32;
+    let fy = y - y0 as f32;
+
+    let top = gray_at(frame, x0, y0) as f32 + (gray_at(frame, x1, y0) as f32 - gray_at(frame, x0, y0) as f32) * fx;
+    let bot = gray_at(frame, x0, y1) as f32 + (gray_at(frame, x1, y1) as f32 - gray_at(frame, x0, y1) as f32) * fx;
+    return (top + (bot - top) * fy).round().clamp(0.0, 255.0) as u8;
 }
 
 fn gray_at(frame: &Frame, x: usize, y: usize) -> u8

@@ -1,10 +1,11 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RtspConfig;
 use crate::data::{Frame, PixelFormat};
 use crate::error::Result;
 
-use super::base::{Camera, FrameSender, Stop};
+use super::base::{CamPace, Camera, FrameSender, Stop};
 use super::docker::DockerFrameStream;
 
 pub struct RtspCamera
@@ -18,18 +19,6 @@ impl RtspCamera
     {
         Self { cfg }
     }
-
-    fn interval(&self) -> Duration
-    {
-        if self.cfg.fps > 0.0
-        {
-            Duration::from_secs_f64(1.0 / self.cfg.fps)
-        }
-        else
-        {
-            Duration::ZERO
-        }
-    }
 }
 
 impl Camera for RtspCamera
@@ -39,9 +28,11 @@ impl Camera for RtspCamera
         &self.cfg.id
     }
 
-    fn run(&mut self, sender: FrameSender, stop: Stop) -> Result<()>
+    fn run(&mut self, sender: FrameSender, stop: Stop, pace: Arc<CamPace>) -> Result<()>
     {
-        let interval = self.interval();
+        // ffmpeg тянет по верхней (горячей) частоте, а вниз до холодной темп режет
+        // сам поток камеры по pace.interval() — так холостой ход дешёвый
+        let capture_fps = pace.capture_fps();
         let reconnect = Duration::from_millis(self.cfg.reconnect_delay_ms);
         let width = 640u32;
         let height = 480u32;
@@ -57,7 +48,7 @@ impl Camera for RtspCamera
 
             let mut stream = match DockerFrameStream::spawn(
                 &self.cfg.url,
-                self.cfg.fps,
+                capture_fps,
                 &self.cfg.transport,
                 width,
                 height,
@@ -75,7 +66,9 @@ impl Camera for RtspCamera
 
             tracing::info!(camera = %self.cfg.id, "connected, reading frames");
 
-            let mut last_sent = Instant::now().checked_sub(interval).unwrap_or_else(Instant::now);
+            let mut last_sent = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
             let mut got_first = false;
 
             while !stop.is_stopped()
@@ -95,7 +88,8 @@ impl Camera for RtspCamera
                             );
                         }
 
-                        if last_sent.elapsed() < interval
+                        // Темп режем по текущему режиму: холодный M fps / горячий N fps
+                        if last_sent.elapsed() < pace.interval()
                         {
                             continue;
                         }
@@ -111,9 +105,11 @@ impl Camera for RtspCamera
                             data,
                         };
 
-                        if sender.blocking_send(frame).is_err()
+                        // Пайплайн занят — кадр отбрасываем, свежий важнее очереди
+                        match sender.try_send(frame)
                         {
-                            break;
+                            Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break
                         }
                     }
                     None =>

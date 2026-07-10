@@ -10,10 +10,10 @@ struct Shot
 {
     w: usize,
     h: usize,
-    pixels: Vec<u32>
+    gray: Vec<u8>,
+    regions: Vec<Region>
 }
 
-// Область как она уходит в RXing
 struct Crop
 {
     w: usize,
@@ -26,37 +26,39 @@ pub struct Preview
 {
     sender: Option<SyncSender<Shot>>,
     crop_sender: Option<SyncSender<Crop>>,
+    restored_sender: Option<SyncSender<Crop>>,
     _window: Option<JoinHandle<()>>
 }
 
 impl Preview
 {
-    // enabled false — окно не поднимаем, show ничего не делает
     pub fn new(enabled: bool) -> Self
     {
         if !enabled
         {
-            return Self { sender: None, crop_sender: None, _window: None };
+            return Self { sender: None, crop_sender: None, restored_sender: None, _window: None };
         }
 
         // Свежий кадр важнее, канал держим коротким
         let (sender, receiver) = sync_channel::<Shot>(2);
         let (crop_sender, crop_receiver) = sync_channel::<Crop>(2);
+        let (restored_sender, restored_receiver) = sync_channel::<Crop>(2);
         let window = std::thread::Builder::new()
             .name("preview-window".into())
-            .spawn(move || run_window(receiver, crop_receiver))
+            .spawn(move || run_window(receiver, crop_receiver, restored_receiver))
             .expect("failed to spawn preview window");
 
         return Self
         {
             sender: Some(sender),
             crop_sender: Some(crop_sender),
+            restored_sender: Some(restored_sender),
             _window: Some(window)
         };
     }
 
-    // Нарисовать области на кадре и отправить в окно
-    pub fn show(&mut self, frame: &Frame, regions: &[Region])
+    // Отправить кадр и области в окно, рисует уже поток окна
+    pub fn show(&self, frame: &Frame, regions: &[Region])
     {
         let Some(sender) = &self.sender else { return; };
 
@@ -67,35 +69,41 @@ impl Preview
             return;
         }
 
-        let mut rgb = to_rgb(frame);
-        for region in regions
-        {
-            draw_quad(&mut rgb, w, h, &region.corners);
-        }
-
         // При заполненном канале старый кадр просто отбрасываем
-        match sender.try_send(Shot { w, h, pixels: to_u32(&rgb) })
+        match sender.try_send(Shot { w, h, gray: to_gray(frame), regions: regions.to_vec() })
         {
             Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
         }
     }
 
-    // Отправить в окно область для врезки
-    pub fn show_crop(&mut self, crop: &Frame)
+    // Отправить в окно область «до восстановления» (левая врезка)
+    pub fn show_crop(&self, crop: &Frame)
     {
-        let Some(sender) = &self.crop_sender else { return; };
+        send_crop(self.crop_sender.as_ref(), crop);
+    }
 
-        let w = crop.width as usize;
-        let h = crop.height as usize;
-        if w == 0 || h == 0
-        {
-            return;
-        }
+    // Отправить в окно область «после восстановления» (правая врезка)
+    pub fn show_restored(&self, crop: &Frame)
+    {
+        send_crop(self.restored_sender.as_ref(), crop);
+    }
+}
 
-        match sender.try_send(Crop { w, h, gray: to_gray(crop) })
-        {
-            Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
-        }
+// Общая отправка области во врезку, старую при заполнении канала отбрасываем
+fn send_crop(sender: Option<&SyncSender<Crop>>, crop: &Frame)
+{
+    let Some(sender) = sender else { return; };
+
+    let w = crop.width as usize;
+    let h = crop.height as usize;
+    if w == 0 || h == 0
+    {
+        return;
+    }
+
+    match sender.try_send(Crop { w, h, gray: to_gray(crop) })
+    {
+        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
     }
 }
 
@@ -108,7 +116,7 @@ impl Default for Preview
 }
 
 // Цикл окна: ждём первый кадр, открываем окно, крутим поток
-fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>)
+fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>, restored_receiver: Receiver<Crop>)
 {
     // Размер окна берём с первого кадра
     let first = match receiver.recv()
@@ -129,15 +137,16 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>)
     window.set_target_fps(60);
 
     let (w, h) = (first.w, first.h);
-    let mut pixels = first.pixels;
+    let mut pixels = render(&first);
 
     // Счётчик кадров окна
     let mut fps = 0u32;
     let mut shown = 0u32;
     let mut mark = Instant::now();
 
-    // Последняя область для врезки
-    let mut crop: Option<Crop> = None;
+    // Последние области для врезок: до и после восстановления
+    let mut crop_before: Option<Crop> = None;
+    let mut crop_after: Option<Crop> = None;
 
     while window.is_open() && !window.is_key_down(Key::Escape)
     {
@@ -148,7 +157,7 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>)
             {
                 Ok(shot) =>
                 {
-                    pixels = shot.pixels;
+                    pixels = render(&shot);
                     shown += 1;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -156,12 +165,23 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>)
             }
         }
 
-        // Догоняем до самой свежей области
+        // Догоняем до самой свежей области «до восстановления»
         loop
         {
             match crop_receiver.try_recv()
             {
-                Ok(shot) => crop = Some(shot),
+                Ok(shot) => crop_before = Some(shot),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break
+            }
+        }
+
+        // ...и «после восстановления»
+        loop
+        {
+            match restored_receiver.try_recv()
+            {
+                Ok(shot) => crop_after = Some(shot),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break
             }
@@ -176,10 +196,7 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>)
         }
 
         draw_fps(&mut pixels, w, h, fps);
-        if let Some(c) = &crop
-        {
-            draw_inset(&mut pixels, w, h, c);
-        }
+        draw_insets(&mut pixels, w, h, crop_before.as_ref(), crop_after.as_ref());
 
         if window.update_with_buffer(&pixels, w, h).is_err()
         {
@@ -188,50 +205,33 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>)
     }
 }
 
-// Перевод кадра в буфер RGB
-fn to_rgb(frame: &Frame) -> Vec<u8>
+// Собрать буфер окна из кадра
+fn render(shot: &Shot) -> Vec<u32>
 {
-    let px = frame.width as usize * frame.height as usize;
-    let mut rgb = Vec::with_capacity(px * 3);
-    match frame.format
+    let mut buf = Vec::with_capacity(shot.gray.len());
+    for &v in &shot.gray
     {
-        PixelFormat::Gray8 =>
-        {
-            for &v in &frame.data
-            {
-                rgb.push(v);
-                rgb.push(v);
-                rgb.push(v);
-            }
-        }
-        PixelFormat::Bgr8 =>
-        {
-            for p in frame.data.chunks_exact(3)
-            {
-                rgb.push(p[2]);
-                rgb.push(p[1]);
-                rgb.push(p[0]);
-            }
-        }
-        PixelFormat::Rgb8 =>
-        {
-            rgb.extend_from_slice(&frame.data);
-        }
+        let v = v as u32;
+        buf.push((v << 16) | (v << 8) | v);
     }
-    return rgb;
+    for region in &shot.regions
+    {
+        draw_quad(&mut buf, shot.w, shot.h, &region.corners);
+    }
+    return buf;
 }
 
 // Четырёхугольник по 4 углам зелёными линиями
-fn draw_quad(rgb: &mut [u8], w: usize, h: usize, corners: &[Point; 4])
+fn draw_quad(buf: &mut [u32], w: usize, h: usize, corners: &[Point; 4])
 {
     for i in 0..4
     {
-        draw_line(rgb, w, h, corners[i], corners[(i + 1) % 4]);
+        draw_line(buf, w, h, corners[i], corners[(i + 1) % 4]);
     }
 }
 
 // Линия по алгоритму Брезенхэма (я хз что это, нейронка предложила)
-fn draw_line(rgb: &mut [u8], w: usize, h: usize, a: Point, b: Point)
+fn draw_line(buf: &mut [u32], w: usize, h: usize, a: Point, b: Point)
 {
     let mut x0 = a.x as i64;
     let mut y0 = a.y as i64;
@@ -246,7 +246,7 @@ fn draw_line(rgb: &mut [u8], w: usize, h: usize, a: Point, b: Point)
 
     loop
     {
-        put_pixel(rgb, w, h, x0, y0);
+        put_pixel(buf, w, h, x0, y0);
         if x0 == x1 && y0 == y1
         {
             break;
@@ -265,27 +265,13 @@ fn draw_line(rgb: &mut [u8], w: usize, h: usize, a: Point, b: Point)
     }
 }
 
-fn put_pixel(rgb: &mut [u8], w: usize, h: usize, x: i64, y: i64)
+fn put_pixel(buf: &mut [u32], w: usize, h: usize, x: i64, y: i64)
 {
     if x < 0 || y < 0 || x as usize >= w || y as usize >= h
     {
         return;
     }
-    let idx = (y as usize * w + x as usize) * 3;
-    rgb[idx] = 0;
-    rgb[idx + 1] = 255;
-    rgb[idx + 2] = 0;
-}
-
-// RGB буфер в формат окна 0x00RRGGBB
-fn to_u32(rgb: &[u8]) -> Vec<u32>
-{
-    let mut out = Vec::with_capacity(rgb.len() / 3);
-    for p in rgb.chunks_exact(3)
-    {
-        out.push((p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32);
-    }
-    return out;
+    buf[y as usize * w + x as usize] = 0x0000_FF00;
 }
 
 // Кадр в буфер яркости
@@ -307,25 +293,46 @@ fn to_gray(frame: &Frame) -> Vec<u8>
     }
 }
 
-// Врезка с областью в правом нижнем углу
-fn draw_inset(buf: &mut [u32], w: usize, h: usize, crop: &Crop)
+// Две врезки в правом нижнем углу: слева область до восстановления (серая рамка),
+// справа — после восстановления (зелёная рамка)
+fn draw_insets(buf: &mut [u32], w: usize, h: usize, before: Option<&Crop>, after: Option<&Crop>)
 {
-    if crop.w == 0 || crop.h == 0
-    {
-        return;
-    }
-
     let margin = 8usize;
-    let side = (w.min(h) / 3).clamp(64, 160);
+    let gap = 6usize;
+    let side = (w.min(h) / 3).clamp(56, 140);
     if side + margin + 2 >= w || side + margin + 2 >= h
     {
         return;
     }
 
-    let x0 = w - side - margin;
     let y0 = h - side - margin;
 
-    // Область масштабируем ближайшим соседом
+    // Правая врезка — в самом углу, «после»
+    let x_after = w - side - margin;
+    if let Some(c) = after
+    {
+        draw_inset_at(buf, w, h, c, x_after, y0, side, 0x0000_FF00);
+    }
+
+    // Левая врезка — вплотную слева, «до». Рисуем только если хватает ширины
+    if x_after >= side + gap + 1
+    {
+        let x_before = x_after - side - gap;
+        if let Some(c) = before
+        {
+            draw_inset_at(buf, w, h, c, x_before, y0, side, 0x00A0_A0A0);
+        }
+    }
+}
+
+// Одна врезка: область масштабируем ближайшим соседом и обводим рамкой
+fn draw_inset_at(buf: &mut [u32], w: usize, h: usize, crop: &Crop, x0: usize, y0: usize, side: usize, border: u32)
+{
+    if crop.w == 0 || crop.h == 0 || x0 + side > w || y0 + side > h
+    {
+        return;
+    }
+
     for dy in 0..side
     {
         let sy = dy * crop.h / side;
@@ -337,8 +344,10 @@ fn draw_inset(buf: &mut [u32], w: usize, h: usize, crop: &Crop)
         }
     }
 
-    // Светлая рамка вокруг врезки
-    draw_border(buf, w, h, x0 - 1, y0 - 1, side + 2, side + 2, 0x00A0_A0A0);
+    if x0 >= 1 && y0 >= 1
+    {
+        draw_border(buf, w, h, x0 - 1, y0 - 1, side + 2, side + 2, border);
+    }
 }
 
 // Прямоугольная рамка в 1 пиксель

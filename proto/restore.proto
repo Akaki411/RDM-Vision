@@ -2,18 +2,16 @@ syntax = "proto3";
 
 package irec;
 
-message RestoreRequest {
-  bytes data = 1;
-  string mime_type = 2;
+message RecoveryRequest {
+    bytes image = 1;
+    string mime_type = 2;
 }
 
-message RestoreResponse {
-  bytes data = 1;
-  string mime_type = 2;
-  bool success = 3;
+message RecoveryResponse {
+    bytes image = 1;
+    string mime_type = 2;
 }
 
-
-service IRECProcessor {
-  rpc RestoreDM(RestoreRequest) returns (RestoreResponse);
+service Irec {
+   rpc RecoveryImage(RecoveryRequest) returns (RecoveryResponse) {}
 }
