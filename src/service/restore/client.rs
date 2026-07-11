@@ -51,7 +51,6 @@ impl RestoreClient
             }
         };
 
-        // Пустой ответ - восстановить не удалось
         if response.image.is_empty()
         {
             tracing::debug!("restore returned empty image, skipping");

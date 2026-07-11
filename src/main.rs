@@ -12,11 +12,9 @@ async fn main() -> anyhow::Result<()>
         )
         .init();
 
-    // Путь к конфигу
     let config_path = std::env::args().nth(1).unwrap_or_else(|| "config.json".into());
     let (settings, created) = Settings::load(&config_path)?;
 
-    // Конфиг только что создан — перезапускаемся, чтобы стартовать с чистого файла
     if created
     {
         tracing::info!(path = %config_path, "config created, restarting");
@@ -28,15 +26,13 @@ async fn main() -> anyhow::Result<()>
 
     tracing::info!(path = %config_path, cameras = settings.cameras.len(), "config loaded");
 
-    // Запуск камер
     let cameras = Cameras::from_settings(&settings)?;
-    let (frames, handle, paces) = cameras.spawn(settings.pipeline.channel_capacity, &settings.pipeline);
+    let (streams, handle) = cameras.spawn(&settings.pipeline);
 
-    // Пайплайн работает до Ctrl-C или закрытия канала
     let pipeline = Pipeline::new(&settings)?;
     tokio::select!
     {
-        result = pipeline.run(frames, paces) =>
+        result = pipeline.run(streams) =>
         {
             if let Err(err) = result
             {
@@ -49,7 +45,6 @@ async fn main() -> anyhow::Result<()>
         }
     }
 
-    // Остановить камеры
     handle.shutdown();
     tracing::info!("done");
     return Ok(());

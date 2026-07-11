@@ -2,26 +2,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use crate::data::Frame;
 use crate::error::Result;
 
-// Камеры пишут сюда, получатель читает пайплайн
-pub type FrameSender = mpsc::Sender<Frame>;
-pub type FrameReceiver = mpsc::Receiver<Frame>;
+pub type FrameSender = watch::Sender<Option<Frame>>;
+pub type FrameReceiver = watch::Receiver<Option<Frame>>;
 
-// Темп кадров камеры. Пайплайн отмечает обнаружение кода (mark_seen), камера по
-// этому решает, идти холодным (M fps) или горячим (N fps) ходом. Разделяется
-// между потоком камеры и воркерами, состояние — атомарное, без гонок
 pub struct CamPace
 {
     start: Instant,
     hot_until_ms: AtomicU64,
     cold: Duration,
     hot: Duration,
-    hold: Duration,
-    hot_fps: f64
+    hold: Duration
 }
 
 impl CamPace
@@ -34,8 +29,7 @@ impl CamPace
             hot_until_ms: AtomicU64::new(0),
             cold: interval_of(cold_fps),
             hot: interval_of(hot_fps),
-            hold: Duration::from_millis(hot_hold_ms),
-            hot_fps
+            hold: Duration::from_millis(hot_hold_ms)
         });
     }
 
@@ -65,12 +59,6 @@ impl CamPace
         }
         return self.cold;
     }
-
-    // Частота захвата ffmpeg — по максимуму (горячий режим)
-    pub fn capture_fps(&self) -> f64
-    {
-        return self.hot_fps;
-    }
 }
 
 fn interval_of(fps: f64) -> Duration
@@ -82,7 +70,6 @@ fn interval_of(fps: f64) -> Duration
     return Duration::ZERO;
 }
 
-// Флаг остановки всех потоков камер после завершения работы программы
 #[derive(Clone, Default)]
 pub struct Stop(Arc<AtomicBool>);
 
@@ -109,7 +96,6 @@ impl Stop
     }
 }
 
-// Источник кадров
 pub trait Camera: Send
 {
     fn id(&self) -> &str;

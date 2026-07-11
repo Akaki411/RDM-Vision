@@ -3,6 +3,7 @@ use crate::data::{Frame, PixelFormat};
 
 pub struct Prepare
 {
+    enabled: bool,
     contrast: f32,
     target: u32
 }
@@ -11,15 +12,19 @@ impl Prepare
 {
     pub fn new(cfg: &NormConfig) -> Self
     {
-        return Self { contrast: cfg.contrast, target: cfg.target_size };
+        return Self { enabled: cfg.enabled, contrast: cfg.contrast, target: cfg.target_size };
     }
 
-    // Вернуть новый ч/б кадр
+    // Вернуть новый ч/б кадр. Если нормализация выключена — кадр как есть
     pub fn run(&self, frame: &Frame) -> Frame
     {
+        if !self.enabled
+        {
+            return frame.clone();
+        }
+
         let (mut gray, mut w, mut h) = to_gray(frame);
 
-        // Большие кадры ужимаем до target_size — RXing и YOLO быстрее, деталей хватает
         if self.target > 0 && w.max(h) > self.target as usize
         {
             let scale = self.target as f32 / w.max(h) as f32;
@@ -81,7 +86,6 @@ fn stretch(gray: &mut [u8], max_gain: f32)
     let total = gray.len() as u32;
     let cut = total / 100;
 
-    // Нижний и верхний перцентили
     let mut low = 0usize;
     let mut acc = 0u32;
     while low < 255 && acc + hist[low] < cut
@@ -106,7 +110,6 @@ fn stretch(gray: &mut [u8], max_gain: f32)
     let gain = (255.0 / (high - low) as f32).min(max_gain.max(1.0));
     let mid = (low + high) as f32 / 2.0;
 
-    // Таблица переходов вместо расчёта на каждый пиксель
     let mut lut = [0u8; 256];
     for (v, out) in lut.iter_mut().enumerate()
     {

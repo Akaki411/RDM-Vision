@@ -24,10 +24,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
 prost = "0.13"
 tonic = "0.12"
-rxing = "0.9.1"
 minifb = "0.27"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 viva-genicam = "0.2.3"
+zxing-cpp = { version = "0.5.2", features = ["bundled"] }
+retina = "0.4.19"
+openh264 = "0.9.7"
+futures = "0.3"
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "2.0.0-rc.12", features = ["directml"] }

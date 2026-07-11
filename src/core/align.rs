@@ -58,7 +58,7 @@ impl Cropper
         };
     }
 
-    // Та же область, но с белой тихой зоной вокруг, её ждёт RXing
+    // Та же область, но с белой тихой зоной вокруг, её ждёт ZXing
     pub fn quiet_zone(&self, crop: &Frame) -> Frame
     {
         let w = crop.width as usize;
@@ -101,7 +101,6 @@ fn order_corners(c: [Point; 4]) -> [Point; 4]
         aa.total_cmp(&ab)
     });
 
-    // Начинаем обход с угла, ближайшего к верхнему-левому
     let mut start = 0;
     let mut best = ordered[0].x + ordered[0].y;
     for (i, p) in ordered.iter().enumerate().skip(1)

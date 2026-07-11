@@ -20,7 +20,6 @@ impl Detector
     // Загрузка модели из cfg.model_path
     pub fn new(cfg: DetectConfig) -> Result<Self>
     {
-        // Пробуем аппаратные провайдеры по приоритету
         let mut builder = Session::builder().map_err(|e| AppError::Detect(e.to_string()))?;
         builder = builder
             .with_execution_providers(providers())
@@ -44,7 +43,6 @@ impl Detector
     // Найти все области data matrix (по 4 угла). При ошибке — пустой список
     pub fn find(&mut self, frame: &Frame) -> Vec<Region>
     {
-        // Кадр зашёл в YOLO
         tracing::debug!(w = frame.width, h = frame.height, "yolo reading frame");
 
         match self.run(frame)
@@ -66,10 +64,8 @@ impl Detector
     {
         let s = self.input;
 
-        // Приводим кадр ко входу модели
         let (gray, scale, pad_x, pad_y) = letterbox(frame, s);
 
-        // Серый канал дублируем в RGB, нормируем в 0..1
         let area = s * s;
         let mut data = vec![0f32; 3 * area];
         for i in 0..area
@@ -135,7 +131,6 @@ pub fn accel_providers() -> Vec<&'static str>
     return list;
 }
 
-// Кандидат до подавления пересечений
 struct Cand
 {
     score: f32,
@@ -150,7 +145,6 @@ fn parse(out: &[f32], shape: &[i64], conf: f32, nms_thr: f32, scale: f32, pad_x:
         return Vec::new();
     }
 
-    // Поддержка разных форматов моделей
     let (num, attrs, transposed) = if shape[1] >= shape[2]
     {
         (shape[1] as usize, shape[2] as usize, false)
@@ -253,8 +247,6 @@ fn bounds(c: &[Point; 4]) -> (f32, f32, f32, f32)
 }
 
 // Ресайз в квадрат size×size с сохранением пропорций и серым фоном
-// Возвращает буфер, масштаб и отступы для обратного перевода координат
-// Опять нейроночная тема
 fn letterbox(frame: &Frame, size: usize) -> (Vec<u8>, f32, f32, f32)
 {
     let w = frame.width as usize;

@@ -36,8 +36,6 @@ impl Camera for GigeCamera
 
     fn run(&mut self, sender: FrameSender, stop: Stop, pace: Arc<CamPace>) -> Result<()>
     {
-        // viva-genicam асинхронна и требует многопоточный рантайм (GVCP-транзакции
-        // ходят через block_in_place). Поднимаем свой в потоке камеры
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -73,12 +71,10 @@ impl GigeCamera
             "gige camera found"
         );
 
-        // Управляющее подключение: тянет XML, строит nodemap
         let mut camera = connect_gige(&device)
             .await
             .map_err(|e| AppError::Camera(format!("gige connect: {e}")))?;
 
-        // Отдельное подключение под настройку канала потока (как в примере крейта)
         let mut stream_device = GigeDevice::open(SocketAddr::new(IpAddr::V4(device.ip), GVCP_PORT))
             .await
             .map_err(|e| AppError::Camera(format!("gige stream open: {e}")))?;
@@ -113,7 +109,6 @@ impl GigeCamera
             {
                 Ok(Some(raw)) =>
                 {
-                    // Темп режем по режиму (cold/hot), как у RTSP
                     if last_sent.elapsed() < pace.interval()
                     {
                         continue;
@@ -122,11 +117,9 @@ impl GigeCamera
 
                     let Some(frame) = convert(raw, &self.cfg.id) else { continue; };
 
-                    // Пайплайн занят — кадр отбрасываем, свежий важнее очереди
-                    match sender.try_send(frame)
+                    if sender.send(Some(frame)).is_err()
                     {
-                        Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break Ok(())
+                        break Ok(());
                     }
                 }
                 Ok(None) => break Ok(()),
@@ -159,8 +152,7 @@ impl GigeCamera
         return Ok(found.remove(0));
     }
 
-    // Интерфейс приёма GVSP: из конфига (IP или имя), иначе автоматически.
-    // Для loopback-эмулятора по умолчанию берём локальную петлю
+    // Интерфейс приёма GVSP: из конфига (IP или имя), иначе автоматически
     fn iface(&self, device_ip: Ipv4Addr) -> Result<Iface>
     {
         let name = self.cfg.interface.trim();
@@ -201,7 +193,6 @@ fn convert(raw: viva_genicam::Frame, camera_id: &str) -> Option<Frame>
 
     let frame = Frame { camera_id: camera_id.to_string(), captured_at, width, height, format, data };
 
-    // Битый/неполный кадр не пускаем дальше
     if frame.data.len() < frame.expected_len()
     {
         return None;

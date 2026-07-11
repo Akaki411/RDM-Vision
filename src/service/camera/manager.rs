@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use crate::config::{CameraConfig, PipelineConfig, Settings};
 use crate::error::{AppError, Result};
@@ -10,8 +9,12 @@ use crate::error::{AppError, Result};
 use super::base::{CamPace, Camera, FrameReceiver, Stop};
 use super::gige::GigeCamera;
 
-// Темпы камер по id — пайплайн через них переключает горячий/холодный ход
-pub type CamPaces = HashMap<String, Arc<CamPace>>;
+pub struct CamStream
+{
+    pub id: String,
+    pub frames: FrameReceiver,
+    pub pace: Arc<CamPace>
+}
 
 // Установление соединений к камерам по конфигу
 fn build(cfg: &CameraConfig) -> Result<Box<dyn Camera>>
@@ -51,22 +54,21 @@ impl Cameras
         return Ok(Self { list });
     }
 
-    // Запустить по потоку на камеру. Возвращает канал кадров, ручку остановки и
-    // темпы камер (по ним пайплайн гоняет холодный/горячий режим)
-    pub fn spawn(self, capacity: usize, pipeline: &PipelineConfig) -> (FrameReceiver, CamerasHandle, CamPaces)
+    // Запустить по потоку на камеру, у каждой свой слот последнего кадра и темп
+    pub fn spawn(self, pipeline: &PipelineConfig) -> (Vec<CamStream>, CamerasHandle)
     {
-        let (sender, receiver) = mpsc::channel(capacity);
         let stop = Stop::new();
         let mut handles = Vec::with_capacity(self.list.len());
-        let mut paces = CamPaces::new();
+        let mut streams = Vec::with_capacity(self.list.len());
 
         for mut camera in self.list
         {
-            let sender = sender.clone();
-            let stop = stop.clone();
             let id = camera.id().to_string();
             let pace = CamPace::new(pipeline.cold_fps, pipeline.hot_fps, pipeline.hot_hold_ms);
-            paces.insert(id.clone(), pace.clone());
+            let (sender, receiver) = watch::channel(None::<crate::data::Frame>);
+            streams.push(CamStream { id: id.clone(), frames: receiver, pace: pace.clone() });
+
+            let stop = stop.clone();
             let handle = std::thread::Builder::new()
                 .name(format!("camera-{id}"))
                 .spawn(move ||
@@ -79,9 +81,8 @@ impl Cameras
                 .expect("failed to spawn camera thread");
             handles.push(handle);
         }
-        drop(sender);
 
-        return (receiver, CamerasHandle { stop, handles }, paces);
+        return (streams, CamerasHandle { stop, handles });
     }
 }
 

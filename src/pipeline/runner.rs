@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Instant};
 
 use tokio::sync::Mutex;
 
@@ -10,7 +10,7 @@ use crate::core::{accel_providers, laplacian_variance, Cropper, Detector, Prepar
 use crate::data::{Code, Frame};
 use crate::error::Result;
 use crate::preview::Preview;
-use crate::service::camera::{CamPaces, FrameReceiver};
+use crate::service::camera::{CamPace, CamStream, FrameReceiver};
 use crate::service::restore::RestoreClient;
 
 pub struct Pipeline
@@ -23,8 +23,7 @@ struct Shared
     middleware: Mutex<Middleware>,
     api: ApiClient,
     preview: Preview,
-    stats: Stats,
-    paces: CamPaces
+    stats: Stats
 }
 
 impl Pipeline
@@ -34,13 +33,10 @@ impl Pipeline
         return Ok(Self { settings: settings.clone() });
     }
 
-    // Поднять пул воркеров, репортер статистики и раздавать им кадры
-    pub async fn run(self, frames: FrameReceiver, paces: CamPaces) -> Result<()>
+    pub async fn run(self, streams: Vec<CamStream>) -> Result<()>
     {
-        let workers = self.settings.pipeline.worker_count();
-
         tracing::info!(
-            workers,
+            cameras = streams.len(),
             cold_fps = self.settings.pipeline.cold_fps,
             hot_fps = self.settings.pipeline.hot_fps,
             accel = ?accel_providers(),
@@ -52,77 +48,75 @@ impl Pipeline
             middleware: Mutex::new(Middleware::new(&self.settings.api)),
             api: ApiClient::new(&self.settings.api),
             preview: Preview::new(self.settings.preview),
-            stats: Stats::default(),
-            paces
+            stats: Stats::default()
         });
 
-        let rx = Arc::new(Mutex::new(frames));
-        let mut handles = Vec::with_capacity(workers);
-        for id in 0..workers
+        let mut handles = Vec::with_capacity(streams.len());
+        for stream in streams
         {
-            let worker = Worker::new(id, &self.settings, shared.clone())?;
-            let rx = rx.clone();
-            handles.push(tokio::spawn(worker.run(rx)));
+            let worker = Worker::new(&self.settings, shared.clone(), stream.pace.clone())?;
+            handles.push(tokio::spawn(worker.run(stream.frames)));
         }
-
-        let reporter = spawn_reporter(shared.clone());
 
         for handle in handles
         {
             let _ = handle.await;
         }
-        reporter.abort();
 
-        tracing::info!("frame channel closed, pipeline finished");
+        tracing::info!("all camera streams closed, pipeline finished");
         return Ok(());
     }
 }
 
 struct Worker
 {
-    id: usize,
     prep: Prepare,
     detector: Detector,
     cropper: Cropper,
     reader: Reader,
-    restore: RestoreClient,
+    restore: Option<RestoreClient>,
     blur_threshold: f32,
+    pace: Arc<CamPace>,
     shared: Arc<Shared>
 }
 
 impl Worker
 {
-    fn new(id: usize, settings: &Settings, shared: Arc<Shared>) -> Result<Self>
+    fn new(settings: &Settings, shared: Arc<Shared>, pace: Arc<CamPace>) -> Result<Self>
     {
+        let restore = if settings.restore_service.enabled
+        {
+            Some(RestoreClient::new(&settings.restore_service))
+        }
+        else
+        {
+            None
+        };
+
         return Ok(Self
         {
-            id,
             prep: Prepare::new(&settings.normalization),
             detector: Detector::new(settings.detection.clone())?,
             cropper: Cropper::new(),
             reader: Reader::new(),
-            restore: RestoreClient::new(&settings.restore_service),
+            restore,
             blur_threshold: settings.detection.blur_threshold,
+            pace,
             shared
         });
     }
 
-    async fn run(mut self, rx: Arc<Mutex<FrameReceiver>>)
+    // Берём самый свежий кадр слота, промежуточные watch отбрасывает сам
+    async fn run(mut self, mut rx: FrameReceiver)
     {
-        tracing::debug!(worker = self.id, "worker started");
-        loop
+        while rx.changed().await.is_ok()
         {
-            let frame = {
-                let mut guard = rx.lock().await;
-                match guard.recv().await
-                {
-                    Some(frame) => frame,
-                    None => break
-                }
-            };
-            self.handle(frame).await;
+            let frame = rx.borrow_and_update().clone();
+            if let Some(frame) = frame
+            {
+                self.handle(frame).await;
+            }
         }
-        tracing::debug!(worker = self.id, "worker stopped");
     }
 
     // Обработка одного кадра
@@ -135,10 +129,7 @@ impl Worker
 
         if out.seen
         {
-            if let Some(pace) = self.shared.paces.get(&frame.camera_id)
-            {
-                pace.mark_seen();
-            }
+            self.pace.mark_seen();
         }
 
         for text in out.decoded
@@ -146,74 +137,76 @@ impl Worker
             self.publish(&frame, text, false, start).await;
         }
 
-        for crop in out.unread
+        if let Some(restore) = &self.restore
         {
-            let Some(fixed) = self.restore.fix(&crop).await else { continue; };
-
-            if fixed.data == crop.data
+            for crop in out.unread
             {
-                continue;
-            }
+                let Some(fixed) = restore.fix(&crop).await else { continue; };
 
-            self.shared.preview.show_crop(&crop);
-            self.shared.preview.show_restored(&fixed);
+                if fixed.data == crop.data
+                {
+                    continue;
+                }
 
-            let framed = self.cropper.quiet_zone(&fixed);
-            if let Some(text) = self.reader.read(&framed, true)
-            {
-                self.shared.stats.restored.fetch_add(1, Ordering::Relaxed);
-                self.publish(&frame, text, true, start).await;
+                self.shared.preview.show_crop(&crop);
+                self.shared.preview.show_restored(&fixed);
+
+                let framed = self.cropper.quiet_zone(&fixed);
+                if let Some(text) = self.reader.read_roi(&framed)
+                {
+                    self.shared.stats.restored.fetch_add(1, Ordering::Relaxed);
+                    self.publish(&frame, text, true, start).await;
+                }
             }
         }
     }
 
-    // Нормализация, быстрый RXing, YOLO, оценка резкости, декод
+    // Нормализация → быстрый полнокадровый ZXing → YOLO → обрезка → тщательный ZXing
     fn process(&mut self, frame: &Frame) -> Processed
     {
-        // 1. Нормализация: ч/б + ресайз + контраст
         let gray = self.prep.run(frame);
 
-        // 2. Быстрая авто-детекция RXing прямо по всему кадру
-        if let Some(text) = self.reader.read(&gray, false)
+        let texts = self.reader.read_frame(&gray);
+        if !texts.is_empty()
         {
             self.shared.preview.show(&gray, &[]);
-            self.shared.stats.decoded.fetch_add(1, Ordering::Relaxed);
-            return Processed { decoded: vec![text], unread: Vec::new(), seen: true };
+            self.shared.stats.decoded.fetch_add(texts.len() as u64, Ordering::Relaxed);
+            return Processed { decoded: texts, unread: Vec::new(), seen: true };
         }
 
-        // 3. Не прочиталось — зовём YOLO
+        if self.restore.is_none()
+        {
+            self.shared.preview.show(&gray, &[]);
+            return Processed { decoded: Vec::new(), unread: Vec::new(), seen: false };
+        }
+
         let regions = self.detector.find(&gray);
         self.shared.preview.show(&gray, &regions);
 
         let mut out = Processed { decoded: Vec::new(), unread: Vec::new(), seen: !regions.is_empty() };
 
-        // 4-5. Плотная обрезка, оценка резкости и попытка распознавания
         for region in &regions
         {
             let crop = self.cropper.crop(&gray, region);
             self.shared.preview.show_crop(&crop);
 
-            // Дисперсия Лапласиана
             let focus = laplacian_variance(&crop.data, crop.width as usize, crop.height as usize);
-            let sharp = focus >= self.blur_threshold;
-            if !sharp
+            if focus < self.blur_threshold
             {
                 self.shared.stats.blurry.fetch_add(1, Ordering::Relaxed);
+                out.unread.push(crop);
+                continue;
             }
 
             let framed = self.cropper.quiet_zone(&crop);
-            match self.reader.read(&framed, sharp)
+            match self.reader.read_roi(&framed)
             {
                 Some(text) =>
                 {
                     self.shared.stats.decoded.fetch_add(1, Ordering::Relaxed);
                     out.decoded.push(text);
                 }
-                None =>
-                {
-                    tracing::debug!(camera = %frame.camera_id, focus, sharp, "region unread, queued for restore");
-                    out.unread.push(crop);
-                }
+                None => out.unread.push(crop)
             }
         }
         return out;
@@ -257,71 +250,3 @@ struct Stats
     blurry: AtomicU64
 }
 
-#[derive(Default, Clone, Copy)]
-struct Snapshot
-{
-    processed: u64,
-    decoded: u64,
-    restored: u64,
-    blurry: u64
-}
-
-impl Stats
-{
-    fn snapshot(&self) -> Snapshot
-    {
-        return Snapshot
-        {
-            processed: self.processed.load(Ordering::Relaxed),
-            decoded: self.decoded.load(Ordering::Relaxed),
-            restored: self.restored.load(Ordering::Relaxed),
-            blurry: self.blurry.load(Ordering::Relaxed)
-        };
-    }
-}
-
-impl Snapshot
-{
-    fn delta(self, prev: Snapshot) -> Snapshot
-    {
-        return Snapshot
-        {
-            processed: self.processed.saturating_sub(prev.processed),
-            decoded: self.decoded.saturating_sub(prev.decoded),
-            restored: self.restored.saturating_sub(prev.restored),
-            blurry: self.blurry.saturating_sub(prev.blurry)
-        };
-    }
-}
-
-// Раз в 5 секунд сводка по пайплайну
-fn spawn_reporter(shared: Arc<Shared>) -> tokio::task::JoinHandle<()>
-{
-    return tokio::spawn(async move
-    {
-        let period = Duration::from_secs(5);
-        let mut ticker = tokio::time::interval(period);
-        let mut last = shared.stats.snapshot();
-
-        loop
-        {
-            ticker.tick().await;
-
-            let now = shared.stats.snapshot();
-            let d = now.delta(last);
-            last = now;
-
-            let hot = shared.paces.values().filter(|p| p.is_hot()).count();
-
-            tracing::info!(
-                fps = format!("{:.1}", d.processed as f64 / period.as_secs_f64()),
-                decoded = d.decoded,
-                restored = d.restored,
-                blurry = d.blurry,
-                hot_cams = hot,
-                cams = shared.paces.len(),
-                "pipeline stats"
-            );
-        }
-    });
-}

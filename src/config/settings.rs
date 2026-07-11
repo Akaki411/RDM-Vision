@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-// Конфиг по умолчанию
 mod defaults
 {
     pub const RTSP_ID: &str = "cam-rtsp-01";
@@ -17,8 +16,11 @@ mod defaults
     pub const GIGE_ADDRESS: &str = "127.0.0.1";
     pub const GIGE_INTERFACE: &str = "127.0.0.1";
 
+    pub const NORM_ENABLED: bool = true;
     pub const NORM_TARGET_SIZE: u32 = 640;
     pub const NORM_CONTRAST: f32 = 1.4;
+
+    pub const RESTORE_ENABLED: bool = true;
 
     pub const DETECT_MODEL_PATH: &str = "models/yolo26n-pose.onnx";
     pub const DETECT_INPUT_SIZE: u32 = 640;
@@ -34,11 +36,9 @@ mod defaults
     pub const API_REPEAT_MS: u64 = 3000;
     pub const API_TIMEOUT_MS: u64 = 5000;
 
-    pub const PIPELINE_CHANNEL_CAPACITY: usize = 8;
-    pub const PIPELINE_WORKERS: usize = 0;
-    pub const PIPELINE_COLD_FPS: f64 = 3.0;
-    pub const PIPELINE_HOT_FPS: f64 = 15.0;
-    pub const PIPELINE_HOT_HOLD_MS: u64 = 1500;
+    pub const PIPELINE_COLD_FPS: f64 = 4.0;
+    pub const PIPELINE_HOT_FPS: f64 = 30.0;
+    pub const PIPELINE_HOT_HOLD_MS: u64 = 2000;
 
     pub const PREVIEW: bool = false;
 }
@@ -98,7 +98,6 @@ impl Settings
     }
 }
 
-// Дефолтные настройки для создания конфига:
 impl Default for Settings
 {
     fn default() -> Self
@@ -184,8 +183,6 @@ impl Default for RtspConfig
     }
 }
 
-// GigE Vision / GenICam камера. address/interface пустые — включаем авто-режим
-// (discovery в сети / выбор интерфейса). Темп кадров задаёт pipeline (cold/hot)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GigeConfig
 {
@@ -214,6 +211,8 @@ impl Default for GigeConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NormConfig
 {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub target_size: u32,
     pub grayscale: bool,
     pub contrast: f32
@@ -223,8 +222,19 @@ impl Default for NormConfig
 {
     fn default() -> Self
     {
-        Self { target_size: defaults::NORM_TARGET_SIZE, grayscale: true, contrast: defaults::NORM_CONTRAST }
+        Self
+        {
+            enabled: defaults::NORM_ENABLED,
+            target_size: defaults::NORM_TARGET_SIZE,
+            grayscale: true,
+            contrast: defaults::NORM_CONTRAST
+        }
     }
+}
+
+fn default_true() -> bool
+{
+    return true;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +277,8 @@ impl Default for DetectConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreConfig
 {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub endpoint: String,
     pub timeout_ms: u64
 }
@@ -275,7 +287,12 @@ impl Default for RestoreConfig
 {
     fn default() -> Self
     {
-        Self { endpoint: defaults::RESTORE_ENDPOINT.into(), timeout_ms: defaults::RESTORE_TIMEOUT_MS }
+        Self
+        {
+            enabled: defaults::RESTORE_ENABLED,
+            endpoint: defaults::RESTORE_ENDPOINT.into(),
+            timeout_ms: defaults::RESTORE_TIMEOUT_MS
+        }
     }
 }
 
@@ -305,24 +322,12 @@ impl Default for ApiConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig
 {
-    pub channel_capacity: usize,
-    // Число параллельных воркеров обработки. 0 — по числу ядер
-    #[serde(default = "default_workers")]
-    pub workers: usize,
-    // M — предел кадров, пока код не виден
     #[serde(default = "default_cold_fps")]
     pub cold_fps: f64,
-    // N — предел кадров, когда код в кадре (разгон)
     #[serde(default = "default_hot_fps")]
     pub hot_fps: f64,
-    // Удержание горячего режима после последнего обнаружения
     #[serde(default = "default_hot_hold_ms")]
     pub hot_hold_ms: u64
-}
-
-fn default_workers() -> usize
-{
-    return defaults::PIPELINE_WORKERS;
 }
 
 fn default_cold_fps() -> f64
@@ -340,27 +345,12 @@ fn default_hot_hold_ms() -> u64
     return defaults::PIPELINE_HOT_HOLD_MS;
 }
 
-impl PipelineConfig
-{
-    // Развёрнутое число воркеров: 0 в конфиге → по числу доступных ядер
-    pub fn worker_count(&self) -> usize
-    {
-        if self.workers > 0
-        {
-            return self.workers;
-        }
-        return std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    }
-}
-
 impl Default for PipelineConfig
 {
     fn default() -> Self
     {
         Self
         {
-            channel_capacity: defaults::PIPELINE_CHANNEL_CAPACITY,
-            workers: default_workers(),
             cold_fps: default_cold_fps(),
             hot_fps: default_hot_fps(),
             hot_hold_ms: default_hot_hold_ms()

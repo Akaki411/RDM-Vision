@@ -21,7 +21,6 @@ struct Crop
     gray: Vec<u8>
 }
 
-// Это крч модуль для того, чтобы понимать что у нас происходит в пайплайне с картинками
 pub struct Preview
 {
     sender: Option<SyncSender<Shot>>,
@@ -39,7 +38,6 @@ impl Preview
             return Self { sender: None, crop_sender: None, restored_sender: None, _window: None };
         }
 
-        // Свежий кадр важнее, канал держим коротким
         let (sender, receiver) = sync_channel::<Shot>(2);
         let (crop_sender, crop_receiver) = sync_channel::<Crop>(2);
         let (restored_sender, restored_receiver) = sync_channel::<Crop>(2);
@@ -69,7 +67,6 @@ impl Preview
             return;
         }
 
-        // При заполненном канале старый кадр просто отбрасываем
         match sender.try_send(Shot { w, h, gray: to_gray(frame), regions: regions.to_vec() })
         {
             Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
@@ -118,7 +115,6 @@ impl Default for Preview
 // Цикл окна: ждём первый кадр, открываем окно, крутим поток
 fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>, restored_receiver: Receiver<Crop>)
 {
-    // Размер окна берём с первого кадра
     let first = match receiver.recv()
     {
         Ok(shot) => shot,
@@ -139,18 +135,15 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>, restored_
     let (w, h) = (first.w, first.h);
     let mut pixels = render(&first);
 
-    // Счётчик кадров окна
     let mut fps = 0u32;
     let mut shown = 0u32;
     let mut mark = Instant::now();
 
-    // Последние области для врезок: до и после восстановления
     let mut crop_before: Option<Crop> = None;
     let mut crop_after: Option<Crop> = None;
 
     while window.is_open() && !window.is_key_down(Key::Escape)
     {
-        // Догоняем до самого свежего кадра
         loop
         {
             match receiver.try_recv()
@@ -165,7 +158,6 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>, restored_
             }
         }
 
-        // Догоняем до самой свежей области «до восстановления»
         loop
         {
             match crop_receiver.try_recv()
@@ -176,7 +168,6 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>, restored_
             }
         }
 
-        // ...и «после восстановления»
         loop
         {
             match restored_receiver.try_recv()
@@ -187,7 +178,6 @@ fn run_window(receiver: Receiver<Shot>, crop_receiver: Receiver<Crop>, restored_
             }
         }
 
-        // Раз в секунду обновляем fps
         if mark.elapsed() >= Duration::from_secs(1)
         {
             fps = shown;
@@ -230,7 +220,7 @@ fn draw_quad(buf: &mut [u32], w: usize, h: usize, corners: &[Point; 4])
     }
 }
 
-// Линия по алгоритму Брезенхэма (я хз что это, нейронка предложила)
+// Линия по алгоритму Брезенхэма
 fn draw_line(buf: &mut [u32], w: usize, h: usize, a: Point, b: Point)
 {
     let mut x0 = a.x as i64;
@@ -293,8 +283,7 @@ fn to_gray(frame: &Frame) -> Vec<u8>
     }
 }
 
-// Две врезки в правом нижнем углу: слева область до восстановления (серая рамка),
-// справа — после восстановления (зелёная рамка)
+// Две врезки в правом нижнем углу: слева до восстановления, справа после
 fn draw_insets(buf: &mut [u32], w: usize, h: usize, before: Option<&Crop>, after: Option<&Crop>)
 {
     let margin = 8usize;
@@ -307,14 +296,12 @@ fn draw_insets(buf: &mut [u32], w: usize, h: usize, before: Option<&Crop>, after
 
     let y0 = h - side - margin;
 
-    // Правая врезка — в самом углу, «после»
     let x_after = w - side - margin;
     if let Some(c) = after
     {
         draw_inset_at(buf, w, h, c, x_after, y0, side, 0x0000_FF00);
     }
 
-    // Левая врезка — вплотную слева, «до». Рисуем только если хватает ширины
     if x_after >= side + gap + 1
     {
         let x_before = x_after - side - gap;

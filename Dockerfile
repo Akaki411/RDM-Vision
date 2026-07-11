@@ -1,13 +1,11 @@
-# Сборка
 FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Устанавливаем зависимости и скачиваем установщик Rust
 RUN apt-get update && apt-get install -y \
     build-essential \
-    protobuf-compiler \
-    libprotobuf-dev \
+    cmake \
+    nasm \
     pkg-config \
     libssl-dev \
     curl \
@@ -17,30 +15,38 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /usr/src/app
 
-# Копируем конфигурацию и исходники
 COPY Cargo.toml Cargo.lock* ./
 COPY build.rs ./
 COPY proto ./proto
 COPY src ./src
 
-# Компилируем проект
 RUN cargo build --release
 
-# Runtime
+RUN mkdir -p /out && \
+    cp target/release/rdm-vision /out/ && \
+    (cp target/release/*.so* /out/ 2>/dev/null || true)
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    openssl \
-    docker.io \
+    libssl3 \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -r -s /bin/false rdmv
 
 WORKDIR /app
 
-COPY --from=builder /usr/src/app/target/release/rdm-vision /usr/local/bin/rdm-vision
+COPY --from=builder /out/ /app/
+COPY models ./models
 
-RUN mkdir -p /app/models
+RUN chown -R rdmv:rdmv /app
 
-CMD ["rdm-vision"]
+USER rdmv
+
+ENV LD_LIBRARY_PATH=/app
+
+CMD ["/app/rdm-vision"]

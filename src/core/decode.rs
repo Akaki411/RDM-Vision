@@ -1,4 +1,5 @@
-use rxing::{DecodeHintValue, DecodeHints};
+use zxingcpp::{BarcodeFormat, Binarizer, ImageFormat, ImageView};
+
 use crate::data::{Frame, PixelFormat};
 
 pub struct Reader;
@@ -10,28 +11,57 @@ impl Reader
         return Self;
     }
 
-    pub fn read(&self, frame: &Frame, hard: bool) -> Option<String>
+    // Быстрый проход по всему кадру, читает сразу все коды
+    pub fn read_frame(&self, frame: &Frame) -> Vec<String>
     {
-        let luma = to_luma(frame);
-        let mut hints = DecodeHints::default()
-            .with(DecodeHintValue::TryHarder(hard))
-            .with(DecodeHintValue::AlsoInverted(hard));
-        let result = rxing::helpers::detect_in_luma_with_hints(
-            luma,
-            frame.width,
-            frame.height,
-            Some(rxing::BarcodeFormat::DATA_MATRIX),
-            &mut hints
-        );
-        match result
-        {
-            Ok(res) => Some(res.getText().to_string()),
-            Err(_) => None
-        }
+        let reader = zxingcpp::read()
+            .formats(BarcodeFormat::DataMatrix)
+            .binarizer(Binarizer::LocalAverage)
+            .try_harder(false)
+            .try_rotate(true)
+            .try_invert(false)
+            .try_downscale(false);
+        return decode_all(&reader, frame);
+    }
+
+    // Тщательный проход по обрезанной области, ждём ровно один код
+    pub fn read_roi(&self, frame: &Frame) -> Option<String>
+    {
+        let reader = zxingcpp::read()
+            .formats(BarcodeFormat::DataMatrix)
+            .binarizer(Binarizer::LocalAverage)
+            .try_harder(true)
+            .try_rotate(true)
+            .try_invert(true)
+            .try_downscale(true)
+            .max_number_of_symbols(1);
+        return decode_all(&reader, frame).into_iter().next();
     }
 }
 
-// Перевод кадра в буфер яркости для RXing
+// Прогнать ридер по кадру и собрать тексты валидных штрихкодов
+fn decode_all(reader: &zxingcpp::BarcodeReader, frame: &Frame) -> Vec<String>
+{
+    let luma = to_luma(frame);
+    let view = match ImageView::from_slice(&luma, frame.width, frame.height, ImageFormat::Lum)
+    {
+        Ok(view) => view,
+        Err(_) => return Vec::new()
+    };
+
+    match reader.from(&view)
+    {
+        Ok(barcodes) => barcodes
+            .into_iter()
+            .filter(|b| b.is_valid())
+            .map(|b| b.text())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        Err(_) => Vec::new()
+    }
+}
+
+// Перевод кадра в буфер яркости для ZXing
 fn to_luma(frame: &Frame) -> Vec<u8>
 {
     match frame.format
