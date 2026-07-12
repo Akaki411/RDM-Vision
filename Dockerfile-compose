@@ -1,0 +1,57 @@
+# Сборка
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Устанавливаем зависимости
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    nasm \
+    pkg-config \
+    libssl-dev \
+    curl \
+    protobuf-compiler \
+    libprotobuf-dev \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /usr/src/app
+
+# Копируем файлы и директории
+COPY Cargo.toml Cargo.lock* ./
+COPY build.rs ./
+COPY proto ./proto
+COPY src ./src
+
+RUN cargo build --release
+
+# Копируем бинарник и .so библиотеки в отдельную папку
+RUN mkdir -p /out && \
+    cp target/release/rdm-vision /out/ && \
+    (cp target/release/*.so* /out/ 2>/dev/null || true)
+
+# Runtime
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libstdc++6 \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Копируем исполняемые файлы сборки
+COPY --from=builder /out/ /app/
+
+# Создаем пустые папки для монтировки файлов с хоста
+RUN mkdir -p /app/models /app/config
+
+ENV LD_LIBRARY_PATH=/app
+
+CMD ["/app/rdm-vision"]
