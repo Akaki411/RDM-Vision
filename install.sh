@@ -36,6 +36,10 @@ cat > "$SERVICE_FILE" <<EOF
 Description=RDM-Vision Service
 Requires=docker.service
 After=docker.service
+# Лимит перезапусков по времени (секунды)
+StartLimitIntervalSec=60
+# Лимит кол-ва перезапусков
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -49,10 +53,6 @@ ExecStop=/usr/bin/docker compose -f Dockerfile-compose down
 # Авторестарт контейнера при падении
 Restart=on-failure
 RestartSec=5
-# Лимит перезапусков по времени (секунды)
-StartLimitIntervalSec=60
-# Лимит кол-ва перезапусков
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
