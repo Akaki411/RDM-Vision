@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::config::ApiConfig;
+use crate::config::WebSocketConfig;
 
 pub struct Middleware
 {
@@ -12,7 +12,7 @@ pub struct Middleware
 
 impl Middleware
 {
-    pub fn new(cfg: &ApiConfig) -> Self
+    pub fn new(cfg: &WebSocketConfig) -> Self
     {
         return Self
         {

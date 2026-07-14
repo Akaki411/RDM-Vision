@@ -4,14 +4,14 @@ use std::time::{Instant};
 
 use tokio::sync::Mutex;
 
-use crate::api::{ApiClient, Middleware};
 use crate::config::Settings;
 use crate::core::{accel_providers, laplacian_variance, Cropper, Detector, Prepare, Reader};
-use crate::data::{Code, Frame};
+use crate::data::Frame;
 use crate::error::Result;
 use crate::preview::Preview;
 use crate::service::camera::{CamPace, CamStream, FrameReceiver};
 use crate::service::restore::RestoreClient;
+use crate::ws::{CodeMessage, CodeServer, Middleware};
 
 pub struct Pipeline
 {
@@ -21,7 +21,7 @@ pub struct Pipeline
 struct Shared
 {
     middleware: Mutex<Middleware>,
-    api: ApiClient,
+    server: CodeServer,
     preview: Preview,
     stats: Stats
 }
@@ -45,8 +45,8 @@ impl Pipeline
 
         let shared = Arc::new(Shared
         {
-            middleware: Mutex::new(Middleware::new(&self.settings.api)),
-            api: ApiClient::new(&self.settings.api),
+            middleware: Mutex::new(Middleware::new(&self.settings.websocket)),
+            server: CodeServer::start(&self.settings.websocket).await?,
             preview: Preview::new(self.settings.preview),
             stats: Stats::default()
         });
@@ -98,7 +98,7 @@ impl Worker
             prep: Prepare::new(&settings.normalization),
             detector: Detector::new(settings.detection.clone())?,
             cropper: Cropper::new(),
-            reader: Reader::new(),
+            reader: Reader::new(&settings.recognition),
             restore,
             blur_threshold: settings.detection.blur_threshold,
             pace,
@@ -212,7 +212,7 @@ impl Worker
         return out;
     }
 
-    // Отправить распознанный код дальше, если middleware его пропускает
+    // Разослать распознанный код клиентам, если middleware его пропускает
     async fn publish(&self, frame: &Frame, text: String, restored: bool, start: Instant)
     {
         {
@@ -223,14 +223,14 @@ impl Worker
             }
         }
 
-        let code = Code
+        let message = CodeMessage
         {
             camera_id: frame.camera_id.clone(),
-            text,
-            captured_at: frame.captured_at,
-            restored
+            code: text,
+            restored,
+            time_ms: start.elapsed().as_millis() as u64
         };
-        self.shared.api.send(&code, start.elapsed()).await;
+        self.shared.server.broadcast(&message);
     }
 }
 

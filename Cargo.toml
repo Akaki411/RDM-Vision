@@ -21,13 +21,14 @@ thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "net"] }
+tokio-tungstenite = "0.24"
 prost = "0.13"
 tonic = "0.12"
 minifb = "0.27"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 viva-genicam = "0.2.3"
-zxing-cpp = { version = "0.5.2", features = ["bundled"] }
+rxing = "0.7"
 retina = "0.4.19"
 openh264 = "0.9.7"
 futures = "0.3"

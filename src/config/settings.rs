@@ -28,13 +28,16 @@ mod defaults
     pub const DETECT_NMS: f32 = 0.45;
     pub const DETECT_BLUR_THRESHOLD: f32 = 15.0;
 
+    pub const RECOGNITION_TRY_HARDER: bool = true;
+    pub const RECOGNITION_TRY_ROTATE: bool = true;
+    pub const RECOGNITION_TRY_INVERT: bool = true;
+    pub const RECOGNITION_TRY_DOWNSCALE: bool = false;
+
     pub const RESTORE_ENDPOINT: &str = "http://127.0.0.1:50051";
     pub const RESTORE_TIMEOUT_MS: u64 = 2000;
 
-    pub const API_BASE_URL: &str = "http://127.0.0.1:3000";
-    pub const API_CODE_ENDPOINT: &str = "/api/codes";
-    pub const API_REPEAT_MS: u64 = 3000;
-    pub const API_TIMEOUT_MS: u64 = 5000;
+    pub const WS_PORT: u16 = 3001;
+    pub const WS_REPEAT_MS: u64 = 3000;
 
     pub const PIPELINE_COLD_FPS: f64 = 4.0;
     pub const PIPELINE_HOT_FPS: f64 = 30.0;
@@ -49,8 +52,9 @@ pub struct Settings
     pub cameras: Vec<CameraConfig>,
     pub normalization: NormConfig,
     pub detection: DetectConfig,
+    pub recognition: RecognitionConfig,
     pub restore_service: RestoreConfig,
-    pub api: ApiConfig,
+    pub websocket: WebSocketConfig,
     #[serde(default)]
     pub pipeline: PipelineConfig,
     #[serde(default = "default_preview")]
@@ -111,8 +115,9 @@ impl Default for Settings
             ],
             normalization: NormConfig::default(),
             detection: DetectConfig::default(),
+            recognition: RecognitionConfig::default(),
             restore_service: RestoreConfig::default(),
-            api: ApiConfig::default(),
+            websocket: WebSocketConfig::default(),
             pipeline: PipelineConfig::default(),
             preview: defaults::PREVIEW
         }
@@ -275,6 +280,53 @@ impl Default for DetectConfig
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecognitionConfig
+{
+    #[serde(default = "default_try_harder")]
+    pub try_harder: bool,
+    #[serde(default = "default_try_rotate")]
+    pub try_rotate: bool,
+    #[serde(default = "default_try_invert")]
+    pub try_invert: bool,
+    #[serde(default = "default_try_downscale")]
+    pub try_downscale: bool
+}
+
+fn default_try_harder() -> bool
+{
+    return defaults::RECOGNITION_TRY_HARDER;
+}
+
+fn default_try_rotate() -> bool
+{
+    return defaults::RECOGNITION_TRY_ROTATE;
+}
+
+fn default_try_invert() -> bool
+{
+    return defaults::RECOGNITION_TRY_INVERT;
+}
+
+fn default_try_downscale() -> bool
+{
+    return defaults::RECOGNITION_TRY_DOWNSCALE;
+}
+
+impl Default for RecognitionConfig
+{
+    fn default() -> Self
+    {
+        Self
+        {
+            try_harder: default_try_harder(),
+            try_rotate: default_try_rotate(),
+            try_invert: default_try_invert(),
+            try_downscale: default_try_downscale()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreConfig
 {
     #[serde(default = "default_true")]
@@ -297,24 +349,20 @@ impl Default for RestoreConfig
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiConfig
+pub struct WebSocketConfig
 {
-    pub base_url: String,
-    pub code_endpoint: String,
-    pub repeat_time_ms: u64,
-    pub timeout_ms: u64
+    pub port: u16,
+    pub repeat_time_ms: u64
 }
 
-impl Default for ApiConfig
+impl Default for WebSocketConfig
 {
     fn default() -> Self
     {
         Self
         {
-            base_url: defaults::API_BASE_URL.into(),
-            code_endpoint: defaults::API_CODE_ENDPOINT.into(),
-            repeat_time_ms: defaults::API_REPEAT_MS,
-            timeout_ms: defaults::API_TIMEOUT_MS
+            port: defaults::WS_PORT,
+            repeat_time_ms: defaults::WS_REPEAT_MS
         }
     }
 }
